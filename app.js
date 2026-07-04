@@ -27,7 +27,7 @@ function buildOutputPipeline(image, metadata) {
 }
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5009;
 
 // ===== CORS =====
 const allowedOrigins = [

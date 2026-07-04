@@ -7,27 +7,36 @@ const logInfo = (tag, message) => {
 
 const prepareImageForProcessing = async (imageBuffer) => {
   try {
-    let image = sharp(imageBuffer).rotate();
+    let buffer = imageBuffer;
 
-    const { format } = await image.metadata();
-
-    logInfo("prepareImage", `Detected format: ${format}`);
-
-    if (["heic", "heif"].includes(format?.toLowerCase())) {
+    // Thử convert HEIC -> JPEG
+    try {
       const jpegBuffer = await heicConvert({
         buffer: imageBuffer,
         format: "JPEG",
         quality: 1,
       });
 
-      image = sharp(jpegBuffer).rotate();
+      buffer = jpegBuffer;
 
-      logInfo("prepareImage", "✅ Successfully converted HEIC to JPEG");
+      logInfo("prepareImage", "✅ HEIC converted to JPEG");
+    } catch {
+      // Không phải HEIC hoặc convert thất bại -> giữ nguyên buffer
+      logInfo(
+        "prepareImage",
+        "Input is not HEIC (or conversion failed), using original image",
+      );
     }
 
+    const image = sharp(buffer).rotate();
     const metadata = await image.metadata();
 
-    return { image, metadata };
+    logInfo("prepareImage", `Detected format: ${metadata.format}`);
+
+    return {
+      image,
+      metadata,
+    };
   } catch (err) {
     logInfo("prepareImage", `Error preparing image: ${err.message}`);
     throw new Error(`Cannot prepare image format: ${err.message}`);
