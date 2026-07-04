@@ -5,7 +5,65 @@ const axios = require("axios");
 const cors = require("cors");
 const multer = require("multer");
 const sharp = require("sharp");
+const convertHeic = require("heic-convert");
 const path = require("path");
+
+const HEIC_EXTENSIONS = new Set([".heic", ".heif", ".hif"]);
+const HEIC_MIMES = /^image\/he(i[cf]|if)(-sequence)?$/i;
+
+const SUPPORTED_INPUT_HINT =
+  "jpeg, png, webp, gif, tiff, bmp, avif, heic, heif, svg";
+
+function isHeicLike(originalname, mimetype) {
+  const ext = path.extname(originalname || "").toLowerCase();
+  return HEIC_EXTENSIONS.has(ext) || HEIC_MIMES.test(mimetype || "");
+}
+
+async function readImageMetadata(buffer) {
+  const image = sharp(buffer, { failOn: "none", unlimited: true });
+  const metadata = await image.metadata();
+  if (!metadata.width || !metadata.height) return null;
+  return { image, metadata };
+}
+
+async function decodeImageInput(buffer, originalname, mimetype) {
+  const sharpResult = await readImageMetadata(buffer);
+  if (sharpResult) {
+    return { ...sharpResult, decodedVia: sharpResult.metadata.format || "sharp" };
+  }
+
+  if (!isHeicLike(originalname, mimetype)) {
+    return null;
+  }
+
+  const decoded = await convertHeic({
+    buffer,
+    format: "PNG",
+  });
+
+  const heicResult = await readImageMetadata(Buffer.from(decoded));
+  if (!heicResult) return null;
+
+  return { ...heicResult, decodedVia: "heic" };
+}
+
+function buildOutputPipeline(image, metadata) {
+  if (metadata.hasAlpha) {
+    return {
+      pipeline: image.webp({ quality: 85, effort: 4 }),
+      contentType: "image/webp",
+      ext: "webp",
+    };
+  }
+
+  return {
+    pipeline: image
+      .rotate()
+      .jpeg({ quality: 85, mozjpeg: true, chromaSubsampling: "4:4:4" }),
+    contentType: "image/jpeg",
+    ext: "jpg",
+  };
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -95,40 +153,32 @@ app.post("/convertImage", upload.single("file"), async (req, res) => {
       return res.status(400).json({ error: "Missing file" });
     }
 
-    const { buffer, originalname } = req.file;
-    const image = sharp(buffer, { failOn: "none" });
-    const metadata = await image.metadata();
+    const { buffer, originalname, mimetype } = req.file;
+    const decoded = await decodeImageInput(buffer, originalname, mimetype);
 
-    if (!metadata.width || !metadata.height) {
-      return res.status(400).json({ error: "Unsupported or invalid image file" });
+    if (!decoded) {
+      return res.status(400).json({
+        error: "Unsupported or invalid image file",
+        supported: SUPPORTED_INPUT_HINT,
+      });
     }
 
-    const baseName = path.basename(originalname || "file", path.extname(originalname || ""));
+    const { image, metadata, decodedVia } = decoded;
+    const baseName = path.basename(
+      originalname || "file",
+      path.extname(originalname || "")
+    );
+    const { pipeline, contentType, ext } = buildOutputPipeline(image, metadata);
 
-    let pipeline;
-    let contentType;
-    let ext;
-
-    // Giữ alpha → WebP (nhẹ, chất lượng tốt); ảnh thường → JPEG
-    if (metadata.hasAlpha) {
-      pipeline = image.webp({ quality: 85, effort: 4 });
-      contentType = "image/webp";
-      ext = "webp";
-    } else {
-      pipeline = image
-        .rotate()
-        .jpeg({ quality: 85, mozjpeg: true, chromaSubsampling: "4:4:4" });
-      contentType = "image/jpeg";
-      ext = "jpg";
-    }
-
-    console.log(`🖼️ Convert ${originalname} → ${ext} (${metadata.width}x${metadata.height})`);
+    console.log(
+      `🖼️ Convert ${originalname} (${decodedVia}) → ${ext} (${metadata.width}x${metadata.height})`
+    );
 
     res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Disposition", `inline; filename="${baseName}.${ext}"`);
 
     pipeline.on("error", (err) => {
-      console.error("❌ toggleFile stream error:", err.message);
+      console.error("❌ convertImage stream error:", err.message);
       if (!res.headersSent) {
         res.status(500).json({ error: "Conversion failed" });
       } else {
@@ -138,7 +188,7 @@ app.post("/convertImage", upload.single("file"), async (req, res) => {
 
     pipeline.pipe(res);
   } catch (error) {
-    console.error("❌ toggleFile error:", error.message);
+    console.error("❌ convertImage error:", error.message);
     if (!res.headersSent) {
       res.status(500).json({ error: "Conversion failed" });
     }
