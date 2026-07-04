@@ -3,6 +3,9 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+const multer = require("multer");
+const sharp = require("sharp");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -32,6 +35,13 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.use(express.json());
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_SIZE },
+});
 
 // ===== DOWNLOAD API =====
 app.post("/download", async (req, res) => {
@@ -75,6 +85,63 @@ app.post("/download", async (req, res) => {
   } catch (error) {
     console.error("❌ Download error:", error.message);
     res.status(500).json({ error: "Download failed" });
+  }
+});
+
+// ===== CONVERT FILE API =====
+app.post("/convertImage", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Missing file" });
+    }
+
+    const { buffer, originalname } = req.file;
+    const image = sharp(buffer, { failOn: "none" });
+    const metadata = await image.metadata();
+
+    if (!metadata.width || !metadata.height) {
+      return res.status(400).json({ error: "Unsupported or invalid image file" });
+    }
+
+    const baseName = path.basename(originalname || "file", path.extname(originalname || ""));
+
+    let pipeline;
+    let contentType;
+    let ext;
+
+    // Giữ alpha → WebP (nhẹ, chất lượng tốt); ảnh thường → JPEG
+    if (metadata.hasAlpha) {
+      pipeline = image.webp({ quality: 85, effort: 4 });
+      contentType = "image/webp";
+      ext = "webp";
+    } else {
+      pipeline = image
+        .rotate()
+        .jpeg({ quality: 85, mozjpeg: true, chromaSubsampling: "4:4:4" });
+      contentType = "image/jpeg";
+      ext = "jpg";
+    }
+
+    console.log(`🖼️ Convert ${originalname} → ${ext} (${metadata.width}x${metadata.height})`);
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `inline; filename="${baseName}.${ext}"`);
+
+    pipeline.on("error", (err) => {
+      console.error("❌ toggleFile stream error:", err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Conversion failed" });
+      } else {
+        res.destroy();
+      }
+    });
+
+    pipeline.pipe(res);
+  } catch (error) {
+    console.error("❌ toggleFile error:", error.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: "Conversion failed" });
+    }
   }
 });
 
