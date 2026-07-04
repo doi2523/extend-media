@@ -5,23 +5,33 @@ const logInfo = (tag, message) => {
   console.log(`[${tag.toUpperCase()}] ${message}`);
 };
 
-const prepareImageForProcessing = async (buffer) => {
-  let image = sharp(buffer).rotate();
+const prepareImageForProcessing = async (imageBuffer) => {
+  try {
+    let image = sharp(imageBuffer).rotate();
 
-  let metadata = await image.metadata();
+    const { format } = await image.metadata();
 
-  if (["heic", "heif"].includes(metadata.format?.toLowerCase())) {
-    const jpegBuffer = await heicConvert({
-      buffer,
-      format: "JPEG",
-      quality: 1,
-    });
+    logInfo("prepareImage", `Detected format: ${format}`);
 
-    image = sharp(jpegBuffer).rotate();
-    metadata = await image.metadata();
+    if (["heic", "heif"].includes(format?.toLowerCase())) {
+      const jpegBuffer = await heicConvert({
+        buffer: imageBuffer,
+        format: "JPEG",
+        quality: 1,
+      });
+
+      image = sharp(jpegBuffer).rotate();
+
+      logInfo("prepareImage", "✅ Successfully converted HEIC to JPEG");
+    }
+
+    const metadata = await image.metadata();
+
+    return { image, metadata };
+  } catch (err) {
+    logInfo("prepareImage", `Error preparing image: ${err.message}`);
+    throw new Error(`Cannot prepare image format: ${err.message}`);
   }
-
-  return { image, metadata };
 };
 
 module.exports = {
